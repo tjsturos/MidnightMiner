@@ -32,7 +32,7 @@ Before running the miner, ensure you have the following:
 You can run the miner from your terminal.
 
 -   **Start mining**:
-    This command will either load an existing wallet from `wallets/wallet1.json` or guide you through creating a new one if it doesn't exist.
+    This command will either load an existing wallet from `wallets.json` or create a new one if it doesn't exist.
     ```bash
     python miner.py
     ```
@@ -42,11 +42,8 @@ You can run the miner from your terminal.
     ```bash
     python miner.py --workers <number of workers>
     ```
-    Each worker typically uses one CPU core. For optimal performance, avoid running more workers than your CPU has cores.
+    ⚠️ Each worker typically uses one CPU core, and 1GB of RAM. Do not run more workers than your system is capable of.
 
-    ```bash
-    python main.py --wallet-file path/to/your_wallet.json
-    ```
 
 ## Exporting Wallets
 
