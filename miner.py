@@ -231,6 +231,22 @@ class WalletManager:
         cose_sign1 = [protected_encoded, unprotected, payload, signature_bytes]
         wallet_data['signature'] = cbor2.dumps(cose_sign1).hex()
 
+    def _register_wallet_with_api(self, wallet_data, api_base):
+        """Register a wallet with the API. Returns True if successful or already registered."""
+        url = f"{api_base}/register/{wallet_data['address']}/{wallet_data['signature']}/{wallet_data['pubkey']}"
+        try:
+            response = requests.post(url, json={})
+            response.raise_for_status()
+            return True
+        except requests.exceptions.HTTPError as e:
+            if e.response.status_code == 400:
+                error_msg = e.response.json().get('message', '')
+                if 'already' in error_msg.lower():
+                    return True
+            return False
+        except Exception:
+            return False
+
     def load_or_create_wallets(self, num_wallets, api_base, donation_enabled=True):
         first_time_setup = False
         if os.path.exists(self.wallet_file):
@@ -270,6 +286,13 @@ class WalletManager:
             self.wallets.append(wallet)
             print(f"  Wallet {len(self.wallets)}: {wallet['address'][:40]}...")
 
+            # Register the wallet immediately
+            print(f"    Registering wallet with API...")
+            if self._register_wallet_with_api(wallet, api_base):
+                print(f"    ✓ Registered successfully")
+            else:
+                print(f"    ✓ Already registered or registration complete")
+
         with open(self.wallet_file, 'w') as f:
             json.dump(self.wallets, f, indent=2)
 
@@ -307,6 +330,9 @@ class WalletManager:
         # Generate wallet outside lock (it's just crypto operations)
         wallet = self.generate_wallet()
         self.sign_terms(wallet, api_base)
+
+        # Register the wallet immediately
+        self._register_wallet_with_api(wallet, api_base)
 
         # Add to list and save
         with self._lock:
@@ -356,25 +382,6 @@ class MinerWorker:
         nonce_bytes = self.random_buffer[self.random_buffer_pos:self.random_buffer_pos + 8]
         self.random_buffer_pos += 8
         return nonce_bytes.hex()
-
-    def register_wallet(self):
-        url = f"{self.api_base}/register/{self.address}/{self.signature}/{self.pubkey}"
-        try:
-            response = requests.post(url, json={})
-            response.raise_for_status()
-            self.logger.info(f"Worker {self.worker_id} ({self.short_addr}): Wallet registered successfully")
-            return True
-        except requests.exceptions.HTTPError as e:
-            if e.response.status_code == 400:
-                error_msg = e.response.json().get('message', '')
-                if 'already' in error_msg.lower():
-                    self.logger.info(f"Worker {self.worker_id} ({self.short_addr}): Wallet already registered")
-                    return True
-            self.logger.error(f"Worker {self.worker_id} ({self.short_addr}): Registration failed - {e}")
-            return False
-        except Exception as e:
-            self.logger.error(f"Worker {self.worker_id} ({self.short_addr}): Registration error - {e}")
-            return False
 
     def get_current_challenge(self):
         try:
@@ -466,11 +473,7 @@ class MinerWorker:
     def run(self):
         """Main worker loop"""
         self.update_status(current_challenge='Initializing...')
-        self.logger.info(f"Worker {self.worker_id} ({self.short_addr}): Starting mining worker ...")
-
-        if not self.register_wallet():
-            self.update_status(current_challenge='Registration failed')
-            return
+        self.logger.info(f"Worker {self.worker_id} ({self.short_addr}): Starting mining worker (wallet assumed registered)...")
 
         self.update_status(current_challenge='Ready')
         rom_cache = {}
