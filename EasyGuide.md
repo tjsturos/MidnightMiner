@@ -1,6 +1,6 @@
 # Easy Guide to Running Midnight Miner on Windows
 
-This guide will help you start mining NIGHT tokens on Windows with MidnightMiner. If you have any questions, you can post them [here](https://www.reddit.com/r/Midnight/comments/1onpvk5/comment/nn40j1r/) or message @djeanql on Discord.
+This guide will help you start mining NIGHT tokens on Windows with MidnightMiner. If you have any questions, you can post them [here](https://www.reddit.com/r/Midnight/comments/1oq92wu/) or message @djeanql on Discord.
 
 ## What This Software Does
 
