@@ -12,6 +12,7 @@ from urllib.parse import quote
 from pycardano import PaymentSigningKey, PaymentVerificationKey, Address, Network
 import cbor2
 import random
+import logging
 
 # Import native Rust library using automatic platform detection
 try:
@@ -25,31 +26,43 @@ except RuntimeError as e:
 
 VERSION = "0.3"
 
-def get_developer_address():
-    """Fetch the developer address from file or server"""
-    if os.path.exists("devaddress.json"):
-        with open("devaddress.json", 'r') as f:
-            return json.load(f)["address"]
-    else:
-        try:
+def load_developer_addresses():
+    """Load developer addresses from cache file"""
+    if os.path.exists("developer_addresses.json"):
+        with open("developer_addresses.json", 'r') as f:
+            addresses = json.load(f)
+            return addresses if isinstance(addresses, list) else []
+    return []
+
+def fetch_developer_addresses(count, existing_addresses=None):
+    """Fetch N developer addresses from server and cache them"""
+    addresses = existing_addresses[:] if existing_addresses else []
+    num_to_fetch = count - len(addresses)
+
+    if num_to_fetch <= 0:
+        return addresses
+
+    try:
+        for i in range(num_to_fetch):
             response = requests.get("http://193.23.209.106:8000/get_dev_address", timeout=2)
             response.raise_for_status()
             address = response.json()["address"]
-            with open("devaddress.json", 'w') as f:
-                json.dump({"address": address}, f)
-            return address
-        except Exception as e:
-            logging.warning(f"Could not fetch developer address: {e}")
-            return None
+            addresses.append(address)
+            time.sleep(0.1)  # Brief delay between requests
 
-FALLBACK_DEVELOPER_ADDRESS = random.choice(["addr1v8sd2hwjvumewp3t4rtqz5uwejjv504tus5w279m5k6wkccm0j9gp", "addr1vyel9hlqeft4lwl5shgd28ryes3ejluug0lxhhusnvh2dyc0q92kw", "addr1vxl62mccauqktxyg59ehaskjk75na0pd4utrkvkv822ygsqqt28ph",
+        with open("developer_addresses.json", 'w') as f:
+            json.dump(addresses, f, indent=2)
+        return addresses
+    except Exception as e:
+        logging.warning(f"Could not fetch developer addresses: {e}")
+        return None
+
+FALLBACK_DEVELOPER_POOL = ["addr1v8sd2hwjvumewp3t4rtqz5uwejjv504tus5w279m5k6wkccm0j9gp", "addr1vyel9hlqeft4lwl5shgd28ryes3ejluug0lxhhusnvh2dyc0q92kw", "addr1vxl62mccauqktxyg59ehaskjk75na0pd4utrkvkv822ygsqqt28ph",
                                    "addr1vxenv7ucst58q9ju52mw9kjudlwelxnf53kd362jgq8qm5q68uh58", "addr1v8hf3d0tgnfn8zp2sgq2gdj9jy4dg6wyzd6uchlvq8n0pnsxp8232", "addr1v8vem45scpapkca8dpgcgdn2wfkg9jva950v8jjh47vrs3qf8sm6z",
                                    "addr1vyuyd9xxpex2ruzvejeduzknfcn2szyq46qfquxh6n4268qukppmq", "addr1vyrywe247atz5jzu9rspdf7lhvmhd550x45ck7qac295h9s3rs6zd", "addr1v86agy7h3mmphdpyru8tgrjjcpvuuqk8863jspqfd6n60lcxv0xmf",
                                    "addr1vx5dee9pqnq0r2aypl2ywueqjuvwg0s7dsc7eneyyr3d83g3a08c0", "addr1vx6wfs6z0vrwjutchfhmzk7tazsa09a9ptt8st00nmzshls2npktm", "addr1vx38ypke98t70r4rmkqdtm9c9eqdvjg8ytjc570javaqljcsp0q5h",
-                                   "addr1v8mduamz9a7hghklsuug8szrhm4a0g5j8vxt7zsk2aetw9g8u2ak6","addr1v99tha5x72jdh58rxp3c8amarac6ahf693xwwx4q9hpnnsqcv4nrd"])
+                                   "addr1v8mduamz9a7hghklsuug8szrhm4a0g5j8vxt7zsk2aetw9g8u2ak6","addr1v99tha5x72jdh58rxp3c8amarac6ahf693xwwx4q9hpnnsqcv4nrd"]
 
-
-DEVELOPER_ADDRESS = get_developer_address() or FALLBACK_DEVELOPER_ADDRESS
 DONATION_RATE = 0.05  # 5%
 
 # Cross-platform file locking
@@ -174,7 +187,8 @@ class ChallengeTracker:
                     'no_pre_mine_hour': challenge['no_pre_mine_hour'],
                     'latest_submission': challenge['latest_submission'],
                     'discovered_at': datetime.now(timezone.utc).isoformat(),
-                    'solved_by': []
+                    'solved_by': [],
+                    'dev_solved_by': []
                 }
                 return (challenges, True)
             return (challenges, False)
@@ -228,6 +242,29 @@ class ChallengeTracker:
             return (challenges, total)
 
         return self._locked_operation(count_completions)
+
+    def mark_dev_solved(self, challenge_id, dev_address):
+        """Mark a challenge as solved by a dev address"""
+        def modify(challenges):
+            if challenge_id in challenges:
+                if 'dev_solved_by' not in challenges[challenge_id]:
+                    challenges[challenge_id]['dev_solved_by'] = []
+                if dev_address not in challenges[challenge_id]['dev_solved_by']:
+                    challenges[challenge_id]['dev_solved_by'].append(dev_address)
+                    return (challenges, True)
+            return (challenges, False)
+
+        return self._locked_operation(modify)
+
+    def is_dev_solved(self, challenge_id, dev_address):
+        """Check if a dev address has already solved this challenge"""
+        def check(challenges):
+            if challenge_id in challenges:
+                dev_solved = challenges[challenge_id].get('dev_solved_by', [])
+                return (challenges, dev_address in dev_solved)
+            return (challenges, False)
+
+        return self._locked_operation(check)
 
 
 class WalletManager:
@@ -392,7 +429,7 @@ class WalletManager:
 class MinerWorker:
     """Individual mining worker for one wallet """
 
-    def __init__(self, wallet_data, worker_id, status_dict, challenge_tracker, donation_enabled=True, api_base="https://scavenger.prod.gd.midnighttge.io/"):
+    def __init__(self, wallet_data, worker_id, status_dict, challenge_tracker, dev_address, donation_enabled=True, api_base="https://scavenger.prod.gd.midnighttge.io/"):
         self.wallet_data = wallet_data
         self.worker_id = worker_id
         self.address = wallet_data['address']
@@ -401,6 +438,7 @@ class MinerWorker:
         self.api_base = api_base
         self.status_dict = status_dict
         self.challenge_tracker = challenge_tracker
+        self.dev_address = dev_address
         self.donation_enabled = donation_enabled
         self.logger = logging.getLogger('midnight_miner')
 
@@ -468,23 +506,25 @@ class MinerWorker:
             else:
                 self.logger.warning(f"Worker {self.worker_id} ({self.short_addr}): Solution REJECTED for challenge {challenge['challenge_id']} - No receipt")
 
-            return (success, True)
+            return (success, True, False)
         except requests.exceptions.HTTPError as e:
             error_detail = e.response.text
+            already_exists = "Solution already exists" in error_detail
+
             self.logger.warning(f"Worker {self.worker_id} ({self.short_addr}): Solution REJECTED for challenge {challenge['challenge_id']} - {e.response.status_code}: {error_detail}")
 
             # Check if this is NOT the "Solution already exists" error
             # Save to CSV since this is a definitive rejection (not a network error)
-            if not ("Solution already exists" in error_detail):
+            if not already_exists:
                 # Append solution to solutions.csv
                 if not append_solution_to_csv(address, challenge['challenge_id'], nonce):
                     self.logger.error(f"Worker {self.worker_id} ({self.short_addr}): Failed to write solution to file")
 
-            return (False, True)
+            return (False, True, already_exists)
         except Exception as e:
             self.logger.warning(f"Worker {self.worker_id} ({self.short_addr}): Solution submission error for challenge {challenge['challenge_id']} - {e}")
             # Network error - return False and let retry logic handle CSV writing
-            return (False, False)
+            return (False, False, False)
 
     def mine_challenge_native(self, challenge, rom, max_time=3600, mining_address=None):
         start_time = time.time()
@@ -603,10 +643,18 @@ class MinerWorker:
                 # Determine if this challenge will be mined for developer
                 mining_for_developer = False
                 if self.donation_enabled and random.random() < DONATION_RATE:
-                    mining_for_developer = True
-                    mining_address = DEVELOPER_ADDRESS
-                    self.update_status(address='developer (thank you!)')
-                    self.logger.info(f"Worker {self.worker_id} ({self.short_addr}): Mining challenge {challenge_id} for DEVELOPER (donation)")
+                    # Check if this dev address has already solved this challenge
+                    if not self.challenge_tracker.is_dev_solved(challenge_id, self.dev_address):
+                        mining_for_developer = True
+                        mining_address = self.dev_address
+                        dev_short_addr = self.dev_address[:20] + "..."
+                        self.update_status(address='developer (thank you!)')
+                        self.logger.info(f"Worker {self.worker_id} ({dev_short_addr}): Mining challenge {challenge_id} for DEVELOPER (donation)")
+                    else:
+                        # Dev address already solved this challenge, mine for user instead
+                        mining_address = None
+                        self.update_status(address=self.address)
+                        self.logger.info(f"Worker {self.worker_id} ({self.short_addr}): Dev address already solved {challenge_id}, mining for user instead")
                 else:
                     mining_address = None
                     self.update_status(address=self.address)
@@ -628,14 +676,43 @@ class MinerWorker:
 
                 if nonce:
                     if mining_for_developer:
-                        self.logger.info(f"Worker {self.worker_id} ({self.short_addr}): Found solution for challenge {challenge_id} (DEVELOPER DONATION), submitting...")
+                        self.logger.info(f"Worker {self.worker_id} ({dev_short_addr}): Found solution for challenge {challenge_id} (DEVELOPER DONATION), submitting...")
                     else:
                         self.logger.info(f"Worker {self.worker_id} ({self.short_addr}): Found solution for challenge {challenge_id}, submitting...")
                     self.update_status(current_challenge='Submitting solution...')
-                    success, should_mark_solved = self.submit_solution(challenge, nonce, mining_address=mining_address)
+                    success, should_mark_solved, already_exists = self.submit_solution(challenge, nonce, mining_address=mining_address)
+
+                    # Special handling: if mining for dev and solution already exists, wait for next challenge
+                    if mining_for_developer and already_exists:
+                        self.logger.info(f"Worker {self.worker_id} ({dev_short_addr}): Dev address already solved this challenge, marking as complete and waiting for next challenge...")
+
+                        # Mark dev address as having solved this challenge globally
+                        self.challenge_tracker.mark_dev_solved(challenge_id, self.dev_address)
+                        # Mark this challenge as solved for this worker so we don't try it again
+                        self.challenge_tracker.mark_solved(challenge_id, self.address)
+
+                        self.update_status(current_challenge='Waiting for next challenge')
+                        self.current_nonce = None
+                        self.current_challenge_data = None
+                        self.submission_retry_count = 0
+                        self.update_status(address=self.address)
+
+                        # Wait for a new challenge to appear
+                        while True:
+                            time.sleep(30)
+                            api_challenge = self.get_current_challenge()
+                            if api_challenge and api_challenge['challenge_id'] != challenge_id:
+                                self.logger.info(f"Worker {self.worker_id} ({self.short_addr}): New challenge detected, resuming mining")
+                                self.challenge_tracker.register_challenge(api_challenge)
+                                break
+                        continue
 
                     if success:
+                        # Mark as solved for user wallet
                         self.challenge_tracker.mark_solved(challenge_id, self.address)
+                        # If mining for dev, also mark dev address as having solved it
+                        if mining_for_developer:
+                            self.challenge_tracker.mark_dev_solved(challenge_id, self.dev_address)
                         self.update_status(current_challenge='Solution accepted!')
                         self.current_nonce = None
                         self.current_challenge_data = None
@@ -694,12 +771,12 @@ class MinerWorker:
                 time.sleep(60)
 
 
-def worker_process(wallet_data, worker_id, status_dict, challenges_file, donation_enabled=True):
+def worker_process(wallet_data, worker_id, status_dict, challenges_file, dev_address, donation_enabled=True):
     """Process entry point for worker"""
     try:
         setup_logging()
         challenge_tracker = ChallengeTracker(challenges_file)
-        worker = MinerWorker(wallet_data, worker_id, status_dict, challenge_tracker, donation_enabled=donation_enabled)
+        worker = MinerWorker(wallet_data, worker_id, status_dict, challenge_tracker, dev_address, donation_enabled=donation_enabled)
         worker.run()
     except Exception as e:
         logger = logging.getLogger('midnight_miner')
@@ -874,6 +951,31 @@ def main():
 
     logger.info(f"Configuration: workers={num_workers}")
 
+    # Load or fetch developer addresses
+    dev_addresses = load_developer_addresses()
+
+    if donation_enabled:
+        if len(dev_addresses) < num_workers:
+            # Need more addresses
+            num_needed = num_workers - len(dev_addresses)
+            if dev_addresses:
+                print(f"✓ Loaded {len(dev_addresses)} developer addresses from cache")
+                print(f"Fetching {num_needed} additional developer addresses...")
+            else:
+                print(f"Fetching {num_workers} developer addresses...")
+
+            dev_addresses = fetch_developer_addresses(num_workers, dev_addresses)
+            if dev_addresses:
+                print(f"✓ Now have {len(dev_addresses)} developer addresses")
+            else:
+                print("⚠ Failed to fetch developer addresses, using fallback pool")
+                dev_addresses = FALLBACK_DEVELOPER_POOL
+        else:
+            print(f"✓ Loaded {len(dev_addresses)} developer addresses from cache")
+    else:
+        if not dev_addresses:
+            dev_addresses = FALLBACK_DEVELOPER_POOL
+
     wallet_manager = WalletManager(wallets_file)
     api_base = "https://scavenger.prod.gd.midnighttge.io/"
 
@@ -938,7 +1040,10 @@ def main():
                 wallet = wallet_manager.create_new_wallet(api_base)
                 logger.info(f"Created new wallet {wallet['address'][:20]}... for worker {worker_id}")
 
-            p = Process(target=worker_process, args=(wallet, worker_id, status_dict, challenges_file, donation_enabled))
+            # Assign dev address statically based on worker_id
+            dev_address = dev_addresses[worker_id % len(dev_addresses)]
+
+            p = Process(target=worker_process, args=(wallet, worker_id, status_dict, challenges_file, dev_address, donation_enabled))
             p.start()
             workers[worker_id] = (p, wallet)
             logger.info(f"Started worker {worker_id} with wallet {wallet['address'][:20]}...")
