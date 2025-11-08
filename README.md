@@ -153,3 +153,6 @@ The miner uses a native Rust library (`ashmaize_py`) for high-performance hashin
 
 The miner automatically detects your operating system and CPU architecture, loading the appropriate binary from the `libs/` directory.
 
+## Ashmaize Rust Library Source Code
+
+This miner uses the [Ashmaize](https://github.com/input-output-hk/ce-ashmaize) hashing algorithm, developed by IOHK. Included in this repository are binaries for my python bindings module. You can find the code [here](https://github.com/djeanql/ashmaize-py)
